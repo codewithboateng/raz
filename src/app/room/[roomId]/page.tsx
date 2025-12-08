@@ -4,10 +4,10 @@ import { useUsername } from "@/hooks/use-username";
 import { client } from "@/lib/client";
 import { useRealtime } from "@/lib/realtime-client";
 import { decryptMessage } from "@/lib/encryption";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
 import { useParams, useRouter } from "next/navigation";
-import { use, useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Message } from "@/lib/realtime";
 
 function formatTimeRemaining(seconds: number) {
@@ -23,89 +23,101 @@ const Page = () => {
   const router = useRouter();
 
   const { username } = useUsername();
+  const queryClient = useQueryClient();
   const [input, setInput] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
+  const [startTime] = useState(() => Date.now());
   const [copyStatus, setCopyStatus] = useState("COPY");
-  const [timeRemaining, setTimeRemaining] = useState<number | null>(null);
-  const [decryptedMessages, setDecryptedMessages] = useState<
-    Map<string, string>
-  >(new Map());
-  const [decrypting, setDecrypting] = useState(false);
-
-  const decryptAllMessages = useCallback(
+  const [now, setNow] = useState(() => Date.now());
+  const decryptMessages = useCallback(
     async (messagesToDecrypt: Message[]) => {
-      setDecrypting(true);
-      const newDecrypted = new Map<string, string>();
+      const decrypted: Record<string, string> = {};
 
       for (const msg of messagesToDecrypt) {
-        if (msg.ciphertext && msg.iv && !newDecrypted.has(msg.id)) {
+        if (msg.ciphertext && msg.iv && decrypted[msg.id] === undefined) {
           try {
-            const decrypted = await decryptMessage(
+            decrypted[msg.id] = await decryptMessage(
               msg.ciphertext,
               msg.iv,
               roomId
             );
-            newDecrypted.set(msg.id, decrypted);
           } catch (error) {
             console.error("Failed to decrypt message:", error);
-            newDecrypted.set(msg.id, "[Decryption failed]");
+            decrypted[msg.id] = "[Decryption failed]";
           }
         }
       }
 
-      setDecryptedMessages(newDecrypted);
-      setDecrypting(false);
+      return decrypted;
     },
     [roomId]
   );
 
-  const { data: ttlData } = useQuery({
+  const { data: ttlSeconds } = useQuery<number>({
     queryKey: ["ttl", roomId],
-    queryFn: async () => {
+    queryFn: async (): Promise<number> => {
       const res = await client.room.ttl.get({ query: { roomId } });
-      return res.data;
+      const ttl = res.data?.ttl;
+      if (typeof ttl !== "number") {
+        throw new Error("TTL unavailable");
+      }
+      return ttl;
     },
   });
 
-  useEffect(() => {
-    if (ttlData?.ttl !== undefined) setTimeRemaining(ttlData.ttl);
-  }, [ttlData]);
+  const { data: participantCount } = useQuery<number>({
+    queryKey: ["participants", roomId],
+    queryFn: async (): Promise<number> => {
+      const res = await client.room.participants.get({ query: { roomId } });
+      const count = res.data?.count;
+      if (typeof count !== "number") {
+        throw new Error("Participant count unavailable");
+      }
+      return count;
+    },
+  });
+
+  const expireAt = useMemo(
+    () => (ttlSeconds !== undefined ? startTime + ttlSeconds * 1000 : null),
+    [ttlSeconds, startTime]
+  );
 
   useEffect(() => {
-    if (timeRemaining === null || timeRemaining < 0) return;
-
-    if (timeRemaining === 0) {
-      router.push("/?destroyed=true");
-      return;
-    }
-
     const interval = setInterval(() => {
-      setTimeRemaining((prev) => {
-        if (prev === null || prev <= 1) {
-          clearInterval(interval);
-          return 0;
-        }
-        return prev - 1;
-      });
+      setNow(Date.now());
     }, 1000);
 
     return () => clearInterval(interval);
+  }, []);
+
+  const timeRemaining = useMemo(() => {
+    if (!expireAt) return null;
+    const remaining = Math.max(0, Math.round((expireAt - now) / 1000));
+    return remaining;
+  }, [expireAt, now]);
+
+  useEffect(() => {
+    if (timeRemaining === 0) {
+      router.push("/?destroyed=true");
+    }
   }, [timeRemaining, router]);
 
-  const { data: messages, refetch } = useQuery({
+  const {
+    data: messages,
+    refetch,
+    isFetching: isDecrypting,
+  } = useQuery<{ messages: Message[]; decrypted: Record<string, string> }>({
     queryKey: ["messages", roomId],
     queryFn: async () => {
       const res = await client.messages.get({ query: { roomId } });
-      return res.data;
+      if (!res.data) {
+        throw new Error("Messages unavailable");
+      }
+      const decrypted = await decryptMessages(res.data.messages);
+      return { messages: res.data.messages, decrypted };
     },
   });
-
-  useEffect(() => {
-    if (messages?.messages) {
-      decryptAllMessages(messages.messages);
-    }
-  }, [messages?.messages, roomId, decryptAllMessages]);
 
   const { mutate: sendMessage, isPending } = useMutation({
     mutationFn: async ({ text }: { text: string }) => {
@@ -120,14 +132,18 @@ const Page = () => {
 
   useRealtime({
     channels: [roomId],
-    events: ["chat.message", "chat.destroy"],
-    onData: ({ event }) => {
+    events: ["chat.message", "chat.destroy", "chat.participants"],
+    onData: ({ event, data }) => {
       if (event === "chat.message") {
         refetch();
       }
 
       if (event === "chat.destroy") {
         router.push("/?destroyed=true");
+      }
+
+      if (event === "chat.participants" && "count" in data) {
+        queryClient.setQueryData(["participants", roomId], data.count);
       }
     },
   });
@@ -162,6 +178,17 @@ const Page = () => {
                 {copyStatus}
               </button>
             </div>
+          </div>
+
+          <div className="h-8 w-px bg-zinc-800" />
+
+          <div className="flex flex-col">
+            <span className="text-xs text-zinc-500 uppercase">
+              Participants
+            </span>
+            <span className="text-sm font-bold text-purple-500">
+              {participantCount}/2
+            </span>
           </div>
 
           <div className="h-8 w-px bg-zinc-800" />
@@ -221,8 +248,8 @@ const Page = () => {
               </div>
 
               <p className="text-sm text-zinc-300 leading-relaxed break-all">
-                {decryptedMessages.get(msg.id) ??
-                  (decrypting ? "Decrypting..." : msg.text)}
+                {messages?.decrypted?.[msg.id] ??
+                  (isDecrypting ? "Decrypting..." : msg.text)}
               </p>
             </div>
           </div>
@@ -257,7 +284,11 @@ const Page = () => {
               inputRef.current?.focus();
             }}
             disabled={!input.trim() || isPending}
-            className="bg-zinc-800 text-zinc-400 px-6 text-sm font-bold hover:text-zinc-200 transition-all disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+            className={`px-6 text-sm font-bold transition-all disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer ${
+              input.trim()
+                ? "bg-green-600 text-white hover:bg-green-700"
+                : "bg-zinc-800 text-zinc-400 hover:text-zinc-200"
+            }`}
           >
             SEND
           </button>

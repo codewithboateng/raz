@@ -30,6 +30,15 @@ const rooms = new Elysia({ prefix: "/room" })
     },
     { query: z.object({ roomId: z.string() }) }
   )
+  .get(
+    "/participants",
+    async ({ auth }) => {
+      const meta = await redis.hgetall(`meta:${auth.roomId}`);
+      const connected = (meta?.connected as string[]) || [];
+      return { count: connected.length };
+    },
+    { query: z.object({ roomId: z.string() }) }
+  )
   .delete(
     "/",
     async ({ auth }) => {

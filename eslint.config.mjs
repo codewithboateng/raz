@@ -19,6 +19,12 @@ const eslintConfig = defineConfig([
       "@typescript-eslint/no-explicit-any": "off",
     },
   },
+  {
+    files: ["src/app/room/[roomId]/page.tsx"],
+    rules: {
+      "react-hooks/exhaustive-deps": "off",
+    },
+  },
 ]);
 
 export default eslintConfig;

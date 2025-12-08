@@ -19,6 +19,9 @@ const schema = {
     destroy: z.object({
       isDestroyed: z.literal(true),
     }),
+    participants: z.object({
+      count: z.number(),
+    }),
   },
 };
 
