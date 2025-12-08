@@ -4,13 +4,12 @@ import z from "zod";
 
 const message = z.object({
   id: z.string(),
-  sender: z.string(),
-  text: z.string().optional(),
-  ciphertext: z.string().optional(),
-  iv: z.string().optional(),
+  senderToken: z.string(),
+  ciphertext: z.string(),
+  iv: z.string(),
   timestamp: z.number(),
   roomId: z.string(),
-  token: z.string().optional(),
+  step: z.number(),
 });
 
 const schema = {

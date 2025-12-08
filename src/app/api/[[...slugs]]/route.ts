@@ -4,7 +4,6 @@ import { nanoid } from "nanoid";
 import { authMiddleware } from "./auth";
 import { z } from "zod";
 import { Message, realtime } from "@/lib/realtime";
-import { encryptMessage } from "@/lib/encryption";
 
 const ROOM_TTL_SECONDS = 60 * 10;
 type RoomMode = "pair" | "group";
@@ -116,7 +115,7 @@ const messages = new Elysia({ prefix: "/messages" })
   .post(
     "/",
     async ({ body, auth }) => {
-      const { sender, text } = body;
+      const { senderToken, ciphertext, iv, step } = body;
       const { roomId } = auth;
 
       const roomExists = await redis.exists(`meta:${roomId}`);
@@ -125,16 +124,14 @@ const messages = new Elysia({ prefix: "/messages" })
         throw new Error("Room does not exist");
       }
 
-      // Encrypt the message
-      const { ciphertext, iv } = await encryptMessage(text, roomId);
-
       const message: Message = {
         id: nanoid(),
-        sender,
+        senderToken,
         ciphertext,
         iv,
         timestamp: Date.now(),
         roomId,
+        step,
       };
 
       // add message to history
@@ -154,26 +151,19 @@ const messages = new Elysia({ prefix: "/messages" })
     {
       query: z.object({ roomId: z.string() }),
       body: z.object({
-        sender: z.string().max(100),
-        text: z.string().max(1000),
+        senderToken: z.string().max(256),
+        ciphertext: z.string().max(5000),
+        iv: z.string().max(200),
+        step: z.number(),
       }),
     }
   )
   .get(
     "/",
     async ({ auth }) => {
-      const messages = await redis.lrange<Message>(
-        `messages:${auth.roomId}`,
-        0,
-        -1
-      );
+      const messages = await redis.lrange<Message>(`messages:${auth.roomId}`, 0, -1);
 
-      return {
-        messages: messages.map((m) => ({
-          ...m,
-          token: m.token === auth.token ? auth.token : undefined,
-        })),
-      };
+      return { messages };
     },
     { query: z.object({ roomId: z.string() }) }
   );

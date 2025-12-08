@@ -1,127 +1,113 @@
 /**
- * Simple base64 encoding that works in both browser and Bun
+ * E2E encryption helpers with a simple hash ratchet.
+ * - A high-entropy secret (from URL fragment) is the root key.
+ * - Each message advances the ratchet: key_{n+1} = HMAC-SHA256(key_n, iv_n)
+ * - AES-GCM is used for payload encryption.
  */
+
+const encoder = new TextEncoder()
+const decoder = new TextDecoder()
+
 function encodeBase64(bytes: Uint8Array): string {
-  // Check if btoa is available (browser/Bun environment)
   if (typeof btoa !== "undefined") {
-    let binary = "";
-    for (let i = 0; i < bytes.byteLength; i++) {
-      binary += String.fromCharCode(bytes[i]);
-    }
-    return btoa(binary);
+    let binary = ""
+    for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i])
+    return btoa(binary)
   }
-
-  // Fallback for other environments
-  if (typeof Buffer !== "undefined") {
-    return Buffer.from(bytes).toString("base64");
-  }
-
-  throw new Error("Base64 encoding not available");
+  return Buffer.from(bytes).toString("base64")
 }
 
-/**
- * Simple base64 decoding that works in both browser and Bun
- */
 function decodeBase64(str: string): Uint8Array {
-  // Check if atob is available (browser/Bun environment)
   if (typeof atob !== "undefined") {
-    const binary = atob(str);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) {
-      bytes[i] = binary.charCodeAt(i);
-    }
-    return bytes;
+    const binary = atob(str)
+    const bytes = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+    return bytes
   }
-
-  // Fallback for other environments
-  if (typeof Buffer !== "undefined") {
-    return new Uint8Array(Buffer.from(str, "base64"));
-  }
-
-  throw new Error("Base64 decoding not available");
+  return new Uint8Array(Buffer.from(str, "base64"))
 }
 
-/**
- * Derives a key from a room ID using HKDF
- * Uses Web Crypto API which is available in Bun and all modern browsers
- */
-async function deriveKeyFromRoomId(roomId: string): Promise<CryptoKey> {
-  const encoder = new TextEncoder();
-  const roomIdBytes = encoder.encode(roomId);
+export function generateSecret(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(32))
+  return encodeBase64(bytes)
+}
 
-  // Import the room ID as a key
-  const material = await crypto.subtle.importKey(
-    "raw",
-    roomIdBytes,
-    { name: "HKDF" },
-    false,
-    ["deriveBits"]
-  );
-
-  // Derive 32 bytes for AES-256
-  const derivedBits = await crypto.subtle.deriveBits(
+async function hkdf(secretBytes: Uint8Array, info: string): Promise<ArrayBuffer> {
+  const key = await crypto.subtle.importKey("raw", secretBytes, "HKDF", false, ["deriveBits"])
+  return crypto.subtle.deriveBits(
     {
       name: "HKDF",
       hash: "SHA-256",
-      salt: new Uint8Array(16), // Fixed salt for deterministic derivation
-      info: new TextEncoder().encode("raz-e2e-encryption"),
+      salt: new Uint8Array(32), // deterministic
+      info: encoder.encode(info),
     },
-    material,
-    256 // 32 bytes = 256 bits
-  );
-
-  // Import the derived key for AES-GCM
-  return crypto.subtle.importKey(
-    "raw",
-    derivedBits,
-    { name: "AES-GCM" },
-    false,
-    ["encrypt", "decrypt"]
-  );
+    key,
+    256
+  )
 }
 
-/**
- * Encrypts a message using the room's derived key
- */
-export async function encryptMessage(
-  message: string,
-  roomId: string
-): Promise<{ ciphertext: string; iv: string }> {
-  const key = await deriveKeyFromRoomId(roomId);
-  const iv = crypto.getRandomValues(new Uint8Array(12)); // 96-bit IV for GCM
-  const encoder = new TextEncoder();
-  const messageBytes = encoder.encode(message);
+export async function deriveInitialKey(secretMaterial: string): Promise<Uint8Array> {
+  const secretBytes = encoder.encode(secretMaterial)
+  const bits = await hkdf(secretBytes, "raz-e2e-root")
+  return new Uint8Array(bits)
+}
 
-  const encrypted = await crypto.subtle.encrypt(
-    { name: "AES-GCM", iv } as any,
-    key,
-    messageBytes as any
-  );
+async function importAesKey(keyBytes: Uint8Array): Promise<CryptoKey> {
+  return crypto.subtle.importKey("raw", keyBytes, { name: "AES-GCM" }, false, ["encrypt", "decrypt"])
+}
+
+async function hmacSha256(keyBytes: Uint8Array, data: Uint8Array): Promise<Uint8Array> {
+  const key = await crypto.subtle.importKey("raw", keyBytes, { name: "HMAC", hash: "SHA-256" }, false, [
+    "sign",
+  ])
+  const sig = await crypto.subtle.sign("HMAC", key, data)
+  return new Uint8Array(sig)
+}
+
+export async function ratchetForward(keyBytes: Uint8Array, ivBytes: Uint8Array): Promise<Uint8Array> {
+  return hmacSha256(keyBytes, ivBytes)
+}
+
+export async function deriveSenderToken(secret: string, sender: string): Promise<string> {
+  const root = await deriveInitialKey(secret)
+  const tokenBytes = await hmacSha256(root, encoder.encode(sender))
+  return encodeBase64(tokenBytes)
+}
+
+export type EncryptedPayload = {
+  ciphertext: string
+  iv: string
+  step: number
+}
+
+export async function encryptWithRatchet(
+  plaintext: string,
+  currentKey: Uint8Array,
+  step: number
+): Promise<{ payload: EncryptedPayload; nextKey: Uint8Array }> {
+  const ivBytes = crypto.getRandomValues(new Uint8Array(12))
+  const aesKey = await importAesKey(currentKey)
+  const encrypted = await crypto.subtle.encrypt({ name: "AES-GCM", iv: ivBytes }, aesKey, encoder.encode(plaintext))
+
+  const nextKey = await ratchetForward(currentKey, ivBytes)
 
   return {
-    ciphertext: encodeBase64(new Uint8Array(encrypted)),
-    iv: encodeBase64(iv),
-  };
+    payload: {
+      ciphertext: encodeBase64(new Uint8Array(encrypted)),
+      iv: encodeBase64(ivBytes),
+      step,
+    },
+    nextKey,
+  }
 }
 
-/**
- * Decrypts a message using the room's derived key
- */
-export async function decryptMessage(
+export async function decryptWithRatchet(
   ciphertext: string,
   iv: string,
-  roomId: string
+  keyBytes: Uint8Array
 ): Promise<string> {
-  const key = await deriveKeyFromRoomId(roomId);
-  const ciphertextBytes = decodeBase64(ciphertext);
-  const ivBytes = decodeBase64(iv);
-
-  const decrypted = await crypto.subtle.decrypt(
-    { name: "AES-GCM", iv: ivBytes } as any,
-    key,
-    ciphertextBytes as any
-  );
-
-  const decoder = new TextDecoder();
-  return decoder.decode(decrypted);
+  const ivBytes = decodeBase64(iv)
+  const aesKey = await importAesKey(keyBytes)
+  const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv: ivBytes }, aesKey, decodeBase64(ciphertext))
+  return decoder.decode(decrypted)
 }

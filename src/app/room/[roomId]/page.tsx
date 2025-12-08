@@ -3,11 +3,17 @@
 import { useUsername } from "@/hooks/use-username";
 import { client } from "@/lib/client";
 import { useRealtime } from "@/lib/realtime-client";
-import { decryptMessage } from "@/lib/encryption";
+import {
+  decryptWithRatchet,
+  deriveInitialKey,
+  deriveSenderToken,
+  encryptWithRatchet,
+  ratchetForward,
+} from "@/lib/encryption";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, startTransition } from "react";
 import type { Message } from "@/lib/realtime";
 
 function formatTimeRemaining(seconds: number) {
@@ -30,29 +36,13 @@ const Page = () => {
 
   const [copyStatus, setCopyStatus] = useState("COPY");
   const [now, setNow] = useState(() => Date.now());
-  const decryptMessages = useCallback(
-    async (messagesToDecrypt: Message[]) => {
-      const decrypted: Record<string, string> = {};
 
-      for (const msg of messagesToDecrypt) {
-        if (msg.ciphertext && msg.iv && decrypted[msg.id] === undefined) {
-          try {
-            decrypted[msg.id] = await decryptMessage(
-              msg.ciphertext,
-              msg.iv,
-              roomId
-            );
-          } catch (error) {
-            console.error("Failed to decrypt message:", error);
-            decrypted[msg.id] = "[Decryption failed]";
-          }
-        }
-      }
+  const [secret, setSecret] = useState<string | null>(null);
+  const [secretReady, setSecretReady] = useState(false);
 
-      return decrypted;
-    },
-    [roomId]
-  );
+  // per-sender ratchet state
+  const senderKeysRef = useRef<Map<string, Uint8Array>>(new Map());
+  const senderStepsRef = useRef<Map<string, number>>(new Map());
 
   const { data: metaData } = useQuery<{
     ttl: number;
@@ -70,6 +60,63 @@ const Page = () => {
       return res.data;
     },
   });
+
+  // Initialize sender key from secret and sender token
+  const ensureSenderKey = useCallback(
+    async (senderToken: string) => {
+      if (!secret) throw new Error("Missing room secret");
+      if (senderKeysRef.current.has(senderToken)) {
+        return senderKeysRef.current.get(senderToken)!;
+      }
+      const key = await deriveInitialKey(`${secret}:${senderToken}`);
+      senderKeysRef.current.set(senderToken, key);
+      if (!senderStepsRef.current.has(senderToken)) {
+        senderStepsRef.current.set(senderToken, 0);
+      }
+      return key;
+    },
+    [secret]
+  );
+
+  const base64ToBytes = useCallback((str: string) => {
+    if (typeof atob !== "undefined") {
+      return Uint8Array.from(atob(str), (c) => c.charCodeAt(0));
+    }
+    if (typeof Buffer !== "undefined") {
+      return new Uint8Array(Buffer.from(str, "base64"));
+    }
+    throw new Error("No base64 decoder available");
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (secretReady && secret) return;
+
+    const url = new URL(window.location.href);
+    const stored = sessionStorage.getItem(`room-secret:${roomId}`);
+    const fragmentMatch = window.location.hash.match(/k=([^&]+)/);
+    const passcode = url.searchParams.get("passcode");
+    const querySecret = url.searchParams.get("k");
+
+    const found =
+      stored ??
+      (fragmentMatch?.[1] ? decodeURIComponent(fragmentMatch[1]) : null) ??
+      (passcode ? decodeURIComponent(passcode) : null) ??
+      (querySecret ? decodeURIComponent(querySecret) : null);
+
+    if (fragmentMatch?.[1]) {
+      url.hash = "";
+      window.history.replaceState({}, "", url.toString());
+    }
+
+    startTransition(() => {
+      if (found) {
+        sessionStorage.setItem(`room-secret:${roomId}`, found);
+        setSecret(found);
+      }
+      setSecretReady(true);
+    });
+  }, [roomId, secret, secretReady]);
 
   const { data: participantCount } = useQuery<number>({
     queryKey: ["participants", roomId],
@@ -115,29 +162,122 @@ const Page = () => {
     }
   }, [timeRemaining, router]);
 
+  type ProcessedMessages = {
+    messages: Message[];
+    decrypted: Record<string, string>;
+    names: Record<string, string>;
+    steps: Array<[string, number]>;
+    keys: Array<[string, number[]]>;
+  };
+
   const {
-    data: messages,
+    data: processed,
     refetch,
     isFetching: isDecrypting,
-  } = useQuery<{ messages: Message[]; decrypted: Record<string, string> }>({
-    queryKey: ["messages", roomId],
+  } = useQuery<ProcessedMessages>({
+    queryKey: ["messages", roomId, secret],
+    enabled: Boolean(secret),
     queryFn: async () => {
       const res = await client.messages.get({ query: { roomId } });
-      if (!res.data) {
+      if (!res.data || !secret) {
         throw new Error("Messages unavailable");
       }
-      const decrypted = await decryptMessages(res.data.messages);
-      return { messages: res.data.messages, decrypted };
+
+      const decrypted: Record<string, string> = {};
+      const names: Record<string, string> = {};
+      const steps: Array<[string, number]> = [];
+      const keys: Array<[string, number[]]> = [];
+
+      const bySender = new Map<string, Message[]>();
+      for (const m of res.data.messages) {
+        const list = bySender.get(m.senderToken) ?? [];
+        list.push(m);
+        bySender.set(m.senderToken, list);
+      }
+
+      for (const [senderToken, list] of bySender) {
+        const sorted = list.slice().sort((a, b) => a.step - b.step);
+        const baseKey = await deriveInitialKey(`${secret}:${senderToken}`);
+        let key = baseKey;
+        let expectedStep = 0;
+
+        for (const msg of sorted) {
+          if (msg.step !== expectedStep) {
+            expectedStep = msg.step;
+          }
+          try {
+            const plaintext = await decryptWithRatchet(msg.ciphertext, msg.iv, key);
+            decrypted[msg.id] = plaintext;
+            try {
+              const parsed = JSON.parse(plaintext);
+              if (parsed?.sender) {
+                names[senderToken] = parsed.sender as string;
+              }
+            } catch {
+              // ignore
+            }
+          } catch {
+            decrypted[msg.id] = "[Decryption failed]";
+          }
+          const ivBytes = base64ToBytes(msg.iv);
+          key = await ratchetForward(key, ivBytes);
+          expectedStep += 1;
+        }
+
+        steps.push([senderToken, expectedStep]);
+        keys.push([senderToken, Array.from(key)]);
+      }
+
+      return { messages: res.data.messages, decrypted, names, steps, keys };
     },
   });
 
+  useEffect(() => {
+    if (!processed) return;
+    const stepMap = new Map<string, number>(processed.steps);
+    const keyMap = new Map<string, Uint8Array>(
+      processed.keys.map(([token, arr]) => [token, new Uint8Array(arr)])
+    );
+    senderStepsRef.current = stepMap;
+    senderKeysRef.current = keyMap;
+  }, [processed]);
+
+  const decryptedMap = useMemo(() => new Map(Object.entries(processed?.decrypted ?? {})), [processed]);
+  const nameMap = useMemo(() => new Map(Object.entries(processed?.names ?? {})), [processed]);
+  const messages = processed?.messages;
+
   const { mutate: sendMessage, isPending } = useMutation({
     mutationFn: async ({ text }: { text: string }) => {
+      if (!secret) throw new Error("Missing room secret");
+      const senderToken = await deriveSenderToken(secret, username);
+      await ensureSenderKey(senderToken);
+      const currentStep = senderStepsRef.current.get(senderToken) ?? 0;
+      const currentKey = senderKeysRef.current.get(senderToken)!;
+
+      const payloadContent = JSON.stringify({
+        sender: username,
+        text,
+        clientTimestamp: Date.now(),
+      });
+
+      const { payload, nextKey } = await encryptWithRatchet(
+        payloadContent,
+        currentKey,
+        currentStep
+      );
+
       await client.messages.post(
-        { sender: username, text },
+        {
+          senderToken,
+          ciphertext: payload.ciphertext,
+          iv: payload.iv,
+          step: payload.step,
+        },
         { query: { roomId } }
       );
 
+      senderKeysRef.current.set(senderToken, nextKey);
+      senderStepsRef.current.set(senderToken, currentStep + 1);
       setInput("");
     },
   });
@@ -167,11 +307,39 @@ const Page = () => {
   });
 
   const copyLink = () => {
-    const url = window.location.href;
+    if (!secret) return;
+    const base = new URL(window.location.origin);
+    base.pathname = `/room/${roomId}`;
+    if (metaData?.mode === "group") {
+      base.searchParams.set("passcode", secret);
+    }
+    base.hash = `k=${encodeURIComponent(secret)}`;
+    const url = base.toString();
     navigator.clipboard.writeText(url);
     setCopyStatus("COPIED!");
     setTimeout(() => setCopyStatus("COPY"), 2000);
   };
+
+  if (!secretReady) {
+    return (
+      <main className="flex items-center justify-center h-screen">
+        <p className="text-zinc-400 text-sm">Loading room key…</p>
+      </main>
+    );
+  }
+
+  if (!secret) {
+    return (
+      <main className="flex items-center justify-center h-screen">
+        <div className="max-w-md space-y-4 text-center">
+          <p className="text-red-500 font-bold">Missing room key</p>
+          <p className="text-zinc-400 text-sm">
+            Open the full room link that includes the <code>#k=</code> fragment to decrypt messages.
+          </p>
+        </div>
+      </main>
+    );
+  }
 
   return (
     <main className="flex flex-col h-screen max-h-screen overflow-hidden">
@@ -240,7 +408,7 @@ const Page = () => {
 
       {/* MESSAGES */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4 scrollbar-thin">
-        {messages?.messages.length === 0 && (
+        {messages?.length === 0 && (
           <div className="flex items-center justify-center h-full">
             <p className="text-zinc-600 text-sm font-mono">
               No messages yet, start the conversation.
@@ -248,30 +416,53 @@ const Page = () => {
           </div>
         )}
 
-        {messages?.messages.map((msg) => (
-          <div key={msg.id} className="flex flex-col items-start">
-            <div className="max-w-[80%] group">
-              <div className="flex items-baseline gap-3 mb-1">
-                <span
-                  className={`text-xs font-bold ${
-                    msg.sender === username ? "text-green-500" : "text-blue-500"
-                  }`}
-                >
-                  {msg.sender === username ? "YOU" : msg.sender}
-                </span>
+        {messages?.map((msg) => {
+          const decrypted = decryptedMap.get(msg.id);
+          let displayText = decrypted ?? (isDecrypting ? "Decrypting..." : "[Encrypted]");
+          let displaySender =
+            nameMap.get(msg.senderToken) ??
+            (msg.senderToken === "" ? "Unknown" : `Peer ${msg.senderToken.slice(0, 6)}`);
+          let displayTime = format(msg.timestamp, "HH:mm");
 
-                <span className="text-[10px] text-zinc-600">
-                  {format(msg.timestamp, "HH:mm")}
-                </span>
+          if (decrypted) {
+            try {
+              const parsed = JSON.parse(decrypted);
+              displayText = parsed.text ?? decrypted;
+              if (parsed.sender) {
+                displaySender = parsed.sender;
+              }
+              if (parsed.clientTimestamp) {
+                displayTime = format(parsed.clientTimestamp, "HH:mm");
+              }
+            } catch {
+              // fallback to raw decrypted string
+            }
+          }
+
+          const isMe = displaySender === username;
+
+          return (
+            <div key={msg.id} className="flex flex-col items-start">
+              <div className="max-w-[80%] group">
+                <div className="flex items-baseline gap-3 mb-1">
+                  <span
+                    className={`text-xs font-bold ${
+                      isMe ? "text-green-500" : "text-blue-500"
+                    }`}
+                  >
+                    {isMe ? "YOU" : displaySender}
+                  </span>
+
+                  <span className="text-[10px] text-zinc-600">{displayTime}</span>
+                </div>
+
+                <p className="text-sm text-zinc-300 leading-relaxed break-all">
+                  {displayText}
+                </p>
               </div>
-
-              <p className="text-sm text-zinc-300 leading-relaxed break-all">
-                {messages?.decrypted?.[msg.id] ??
-                  (isDecrypting ? "Decrypting..." : msg.text)}
-              </p>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       <div className="p-4 border-t border-zinc-800 bg-zinc-900/30">

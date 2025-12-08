@@ -2,6 +2,7 @@
 
 import { useUsername } from "@/hooks/use-username"
 import { client } from "@/lib/client"
+import { generateSecret } from "@/lib/encryption"
 import { useMutation } from "@tanstack/react-query"
 import { useRouter, useSearchParams } from "next/navigation"
 import { Suspense, useMemo, useState } from "react"
@@ -34,7 +35,12 @@ function Lobby() {
       const res = await client.room.create.post({ mode: "pair" })
 
       if (res.status === 200) {
-        router.push(`/room/${res.data?.roomId}`)
+        const secret = generateSecret()
+        if (typeof window !== "undefined" && res.data?.roomId) {
+          sessionStorage.setItem(`room-secret:${res.data.roomId}`, secret)
+        }
+        const url = `/room/${res.data?.roomId}?k=${encodeURIComponent(secret)}#k=${encodeURIComponent(secret)}`
+        router.push(url)
       }
     },
   })
@@ -50,7 +56,16 @@ function Lobby() {
       })
 
       if (res.status === 200 && res.data?.roomId) {
-        router.push(`/room/${res.data.roomId}?passcode=${encodeURIComponent(passcode)}`)
+        // For group rooms, use the passcode as the shared secret so invitees only need the passcode.
+        const secret = passcode
+        if (typeof window !== "undefined") {
+          sessionStorage.setItem(`room-secret:${res.data.roomId}`, secret)
+        }
+        router.push(
+          `/room/${res.data.roomId}?passcode=${encodeURIComponent(
+            passcode
+          )}&k=${encodeURIComponent(secret)}#k=${encodeURIComponent(secret)}`
+        )
       }
     },
   })
@@ -64,7 +79,14 @@ function Lobby() {
 
   const handleJoin = () => {
     if (!joinRoomId.trim() || !joinPasscode.trim()) return
-    router.push(`/room/${joinRoomId.trim()}?passcode=${encodeURIComponent(joinPasscode.trim())}`)
+    if (typeof window !== "undefined") {
+      sessionStorage.setItem(`room-secret:${joinRoomId.trim()}`, joinPasscode.trim())
+    }
+    router.push(
+      `/room/${joinRoomId.trim()}?passcode=${encodeURIComponent(
+        joinPasscode.trim()
+      )}&k=${encodeURIComponent(joinPasscode.trim())}#k=${encodeURIComponent(joinPasscode.trim())}`
+    )
   }
 
   return (
