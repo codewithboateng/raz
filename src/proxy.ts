@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { redis } from "./lib/redis"
 import { nanoid } from "nanoid"
+import { realtime } from "./lib/realtime"
 
 export const proxy = async (req: NextRequest) => {
   const pathname = req.nextUrl.pathname
@@ -61,6 +62,10 @@ export const proxy = async (req: NextRequest) => {
     connected: [...connected, token],
     ownerToken: meta.ownerToken ?? token,
   })
+
+  await realtime
+    .channel(roomId)
+    .emit("chat.participants", { count: connected.length + 1 })
 
   return response
 }
