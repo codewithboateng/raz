@@ -45,11 +45,12 @@ const Page = () => {
   const senderStepsRef = useRef<Map<string, number>>(new Map());
 
   const { data: metaData } = useQuery<{
-    ttl: number;
+    ttl: number | null;
     mode: "pair" | "group";
-    capacity: number;
+    capacity: number | null;
     isOwner: boolean;
-    expiresAt: number;
+    expiresAt: number | null;
+    master?: boolean;
   }>({
     queryKey: ["room-meta", roomId],
     queryFn: async () => {
@@ -245,6 +246,11 @@ const Page = () => {
   const decryptedMap = useMemo(() => new Map(Object.entries(processed?.decrypted ?? {})), [processed]);
   const nameMap = useMemo(() => new Map(Object.entries(processed?.names ?? {})), [processed]);
   const messages = processed?.messages;
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
 
   const { mutate: sendMessage, isPending } = useMutation({
     mutationFn: async ({ text }: { text: string }) => {
@@ -367,7 +373,8 @@ const Page = () => {
               Participants
             </span>
             <span className="text-sm font-bold text-purple-500">
-              {participantCount ?? 0}/{metaData?.capacity ?? 2}
+              {participantCount ?? 0}/
+              {metaData?.capacity === null ? "∞" : metaData?.capacity ?? 2}
             </span>
           </div>
 
@@ -463,6 +470,7 @@ const Page = () => {
             </div>
           );
         })}
+        <div ref={messagesEndRef} />
       </div>
 
       <div className="p-4 border-t border-zinc-800 bg-zinc-900/30">

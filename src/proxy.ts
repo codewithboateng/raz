@@ -17,6 +17,7 @@ export const proxy = async (req: NextRequest) => {
     mode?: "pair" | "group"
     passcode?: string
     ownerToken?: string
+    master?: string
   }>(`meta:${roomId}`)
 
   if (!meta) {
@@ -32,8 +33,9 @@ export const proxy = async (req: NextRequest) => {
   }
 
   // USER IS NOT ALLOWED TO JOIN
+  const isMaster = meta.master === "true"
   const capacity = meta.mode === "group" ? 12 : 2
-  if (connected.length >= capacity) {
+  if (!isMaster && connected.length >= capacity) {
     return NextResponse.redirect(new URL("/?error=room-full", req.url))
   }
 

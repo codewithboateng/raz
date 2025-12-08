@@ -6,6 +6,7 @@ import { z } from "zod";
 import { Message, realtime } from "@/lib/realtime";
 
 const ROOM_TTL_SECONDS = 60 * 10;
+const MASTER_PASSCODE = process.env.MASTER_PASSCODE;
 type RoomMode = "pair" | "group";
 
 const rooms = new Elysia({ prefix: "/room" })
@@ -14,6 +15,7 @@ const rooms = new Elysia({ prefix: "/room" })
     async ({ body, set }) => {
       const mode: RoomMode = body?.mode === "group" ? "group" : "pair";
       const passcode = body?.passcode?.trim();
+      const isMaster = MASTER_PASSCODE && passcode === MASTER_PASSCODE;
 
       if (mode === "group" && !passcode) {
         set.status = 400;
@@ -30,10 +32,17 @@ const rooms = new Elysia({ prefix: "/room" })
       if (mode === "group" && passcode) {
         metaPayload.passcode = passcode;
       }
+      if (isMaster) {
+        metaPayload.master = "true";
+      }
 
       await redis.hset(`meta:${roomId}`, metaPayload);
 
-      await redis.expire(`meta:${roomId}`, ROOM_TTL_SECONDS);
+      if (isMaster) {
+        await redis.persist(`meta:${roomId}`);
+      } else {
+        await redis.expire(`meta:${roomId}`, ROOM_TTL_SECONDS);
+      }
 
       return { roomId, mode };
     },
@@ -54,20 +63,23 @@ const rooms = new Elysia({ prefix: "/room" })
         connected: string[];
         mode?: RoomMode;
         ownerToken?: string;
+        master?: string;
       }>(`meta:${auth.roomId}`);
 
       const mode = meta?.mode ?? "pair";
-      const capacity = mode === "group" ? 12 : 2;
+      const isMaster = meta?.master === "true";
+      const capacity = isMaster ? null : mode === "group" ? 12 : 2;
       const isOwner = auth.token === meta?.ownerToken;
       const ttl = await redis.ttl(`meta:${auth.roomId}`);
-      const safeTtl = ttl > 0 ? ttl : 0;
+      const safeTtl = isMaster ? null : ttl > 0 ? ttl : 0;
 
       return {
         mode,
         capacity,
         isOwner,
         ttl: safeTtl,
-        expiresAt: Date.now() + safeTtl * 1000,
+        expiresAt: safeTtl ? Date.now() + safeTtl * 1000 : null,
+        master: isMaster,
       };
     },
     { query: z.object({ roomId: z.string() }) }
@@ -144,9 +156,15 @@ const messages = new Elysia({ prefix: "/messages" })
       // housekeeping
       const remaining = await redis.ttl(`meta:${roomId}`);
 
-      await redis.expire(`messages:${roomId}`, remaining);
-      await redis.expire(`history:${roomId}`, remaining);
-      await redis.expire(roomId, remaining);
+      if (remaining > 0) {
+        await redis.expire(`messages:${roomId}`, remaining);
+        await redis.expire(`history:${roomId}`, remaining);
+        await redis.expire(roomId, remaining);
+      } else {
+        await redis.persist(`messages:${roomId}`);
+        await redis.persist(`history:${roomId}`);
+        await redis.persist(roomId);
+      }
     },
     {
       query: z.object({ roomId: z.string() }),
