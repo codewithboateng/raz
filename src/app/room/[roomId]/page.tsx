@@ -6,7 +6,7 @@ import { useRealtime } from "@/lib/realtime-client";
 import { decryptMessage } from "@/lib/encryption";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Message } from "@/lib/realtime";
 
@@ -21,13 +21,13 @@ const Page = () => {
   const roomId = params.roomId as string;
 
   const router = useRouter();
+  const searchParams = useSearchParams();
 
   const { username } = useUsername();
   const queryClient = useQueryClient();
   const [input, setInput] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const [startTime] = useState(() => Date.now());
   const [copyStatus, setCopyStatus] = useState("COPY");
   const [now, setNow] = useState(() => Date.now());
   const decryptMessages = useCallback(
@@ -54,15 +54,20 @@ const Page = () => {
     [roomId]
   );
 
-  const { data: ttlSeconds } = useQuery<number>({
-    queryKey: ["ttl", roomId],
-    queryFn: async (): Promise<number> => {
-      const res = await client.room.ttl.get({ query: { roomId } });
-      const ttl = res.data?.ttl;
-      if (typeof ttl !== "number") {
-        throw new Error("TTL unavailable");
+  const { data: metaData } = useQuery<{
+    ttl: number;
+    mode: "pair" | "group";
+    capacity: number;
+    isOwner: boolean;
+    expiresAt: number;
+  }>({
+    queryKey: ["room-meta", roomId],
+    queryFn: async () => {
+      const res = await client.room.meta.get({ query: { roomId } });
+      if (!res.data) {
+        throw new Error("Room metadata unavailable");
       }
-      return ttl;
+      return res.data;
     },
   });
 
@@ -78,9 +83,16 @@ const Page = () => {
     },
   });
 
+  useEffect(() => {
+    const passcode = searchParams.get("passcode");
+    if (passcode) {
+      router.replace(`/room/${roomId}`);
+    }
+  }, [searchParams, router, roomId]);
+
   const expireAt = useMemo(
-    () => (ttlSeconds !== undefined ? startTime + ttlSeconds * 1000 : null),
-    [ttlSeconds, startTime]
+    () => (metaData?.expiresAt ? metaData.expiresAt : null),
+    [metaData?.expiresAt]
   );
 
   useEffect(() => {
@@ -187,7 +199,7 @@ const Page = () => {
               Participants
             </span>
             <span className="text-sm font-bold text-purple-500">
-              {participantCount}/2
+              {participantCount ?? 0}/{metaData?.capacity ?? 2}
             </span>
           </div>
 
@@ -213,7 +225,13 @@ const Page = () => {
 
         <button
           onClick={() => destroyRoom()}
-          className="text-xs bg-zinc-800 hover:bg-red-600 px-3 py-1.5 rounded text-zinc-400 hover:text-white font-bold transition-all group flex items-center gap-2 disabled:opacity-50"
+          disabled={metaData?.mode === "group" && !metaData.isOwner}
+          title={
+            metaData?.mode === "group" && !metaData.isOwner
+              ? "Only the room creator can destroy this room"
+              : undefined
+          }
+          className="text-xs bg-zinc-800 hover:bg-red-600 px-3 py-1.5 rounded text-zinc-400 hover:text-white font-bold transition-all group flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <span className="group-hover:animate-pulse">💣</span>
           DESTROY NOW

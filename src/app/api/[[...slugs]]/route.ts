@@ -1,5 +1,5 @@
 import { redis } from "@/lib/redis";
-import { Elysia, t } from "elysia";
+import { Elysia } from "elysia";
 import { nanoid } from "nanoid";
 import { authMiddleware } from "./auth";
 import { z } from "zod";
@@ -7,26 +7,69 @@ import { Message, realtime } from "@/lib/realtime";
 import { encryptMessage } from "@/lib/encryption";
 
 const ROOM_TTL_SECONDS = 60 * 10;
+type RoomMode = "pair" | "group";
 
 const rooms = new Elysia({ prefix: "/room" })
-  .post("/create", async () => {
-    const roomId = nanoid();
+  .post(
+    "/create",
+    async ({ body, set }) => {
+      const mode: RoomMode = body?.mode === "group" ? "group" : "pair";
+      const passcode = body?.passcode?.trim();
 
-    await redis.hset(`meta:${roomId}`, {
-      connected: [],
-      createdAt: Date.now(),
-    });
+      if (mode === "group" && !passcode) {
+        set.status = 400;
+        return { error: "Passcode required for group rooms" };
+      }
 
-    await redis.expire(`meta:${roomId}`, ROOM_TTL_SECONDS);
+      const roomId = nanoid();
+      const metaPayload: Record<string, unknown> = {
+        connected: [],
+        createdAt: Date.now(),
+        mode,
+      };
 
-    return { roomId };
-  })
+      if (mode === "group" && passcode) {
+        metaPayload.passcode = passcode;
+      }
+
+      await redis.hset(`meta:${roomId}`, metaPayload);
+
+      await redis.expire(`meta:${roomId}`, ROOM_TTL_SECONDS);
+
+      return { roomId, mode };
+    },
+    {
+      body: z
+        .object({
+          mode: z.enum(["pair", "group"]).optional(),
+          passcode: z.string().max(100).optional(),
+        })
+        .optional(),
+    }
+  )
   .use(authMiddleware)
   .get(
-    "/ttl",
+    "/meta",
     async ({ auth }) => {
+      const meta = await redis.hgetall<{
+        connected: string[];
+        mode?: RoomMode;
+        ownerToken?: string;
+      }>(`meta:${auth.roomId}`);
+
+      const mode = meta?.mode ?? "pair";
+      const capacity = mode === "group" ? 12 : 2;
+      const isOwner = auth.token === meta?.ownerToken;
       const ttl = await redis.ttl(`meta:${auth.roomId}`);
-      return { ttl: ttl > 0 ? ttl : 0 };
+      const safeTtl = ttl > 0 ? ttl : 0;
+
+      return {
+        mode,
+        capacity,
+        isOwner,
+        ttl: safeTtl,
+        expiresAt: Date.now() + safeTtl * 1000,
+      };
     },
     { query: z.object({ roomId: z.string() }) }
   )
@@ -41,7 +84,20 @@ const rooms = new Elysia({ prefix: "/room" })
   )
   .delete(
     "/",
-    async ({ auth }) => {
+    async ({ auth, set }) => {
+      const meta = await redis.hgetall<{
+        mode?: RoomMode;
+        ownerToken?: string;
+      }>(`meta:${auth.roomId}`);
+
+      const mode = meta?.mode ?? "pair";
+      const isOwner = auth.token === meta?.ownerToken;
+
+      if (mode === "group" && !isOwner) {
+        set.status = 403;
+        return { error: "Only the room owner can destroy this room" };
+      }
+
       await realtime
         .channel(auth.roomId)
         .emit("chat.destroy", { isDestroyed: true });
