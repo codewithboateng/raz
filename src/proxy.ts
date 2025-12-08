@@ -33,7 +33,9 @@ export const proxy = async (req: NextRequest) => {
   }
 
   // USER IS NOT ALLOWED TO JOIN
-  const isMaster = meta.master === "true"
+  const isMaster =
+    meta.master === "true" ||
+    (process.env.MASTER_PASSCODE && meta.passcode === process.env.MASTER_PASSCODE)
   const capacity = meta.mode === "group" ? 12 : 2
   if (!isMaster && connected.length >= capacity) {
     return NextResponse.redirect(new URL("/?error=room-full", req.url))

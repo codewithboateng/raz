@@ -15,7 +15,7 @@ const rooms = new Elysia({ prefix: "/room" })
     async ({ body, set }) => {
       const mode: RoomMode = body?.mode === "group" ? "group" : "pair";
       const passcode = body?.passcode?.trim();
-      const isMaster = MASTER_PASSCODE && passcode === MASTER_PASSCODE;
+      const isMaster = Boolean(MASTER_PASSCODE && passcode === MASTER_PASSCODE);
 
       if (mode === "group" && !passcode) {
         set.status = 400;
@@ -64,10 +64,13 @@ const rooms = new Elysia({ prefix: "/room" })
         mode?: RoomMode;
         ownerToken?: string;
         master?: string;
+        passcode?: string;
       }>(`meta:${auth.roomId}`);
 
       const mode = meta?.mode ?? "pair";
-      const isMaster = meta?.master === "true";
+      const isMaster =
+        meta?.master === "true" ||
+        (MASTER_PASSCODE && meta?.passcode && meta.passcode === MASTER_PASSCODE);
       const capacity = isMaster ? null : mode === "group" ? 12 : 2;
       const isOwner = auth.token === meta?.ownerToken;
       const ttl = await redis.ttl(`meta:${auth.roomId}`);

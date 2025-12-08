@@ -44,21 +44,23 @@ const Page = () => {
   const senderKeysRef = useRef<Map<string, Uint8Array>>(new Map());
   const senderStepsRef = useRef<Map<string, number>>(new Map());
 
-  const { data: metaData } = useQuery<{
+  type MetaData = {
     ttl: number | null;
     mode: "pair" | "group";
     capacity: number | null;
     isOwner: boolean;
     expiresAt: number | null;
     master?: boolean;
-  }>({
+  };
+
+  const { data: metaData } = useQuery<MetaData>({
     queryKey: ["room-meta", roomId],
     queryFn: async () => {
       const res = await client.room.meta.get({ query: { roomId } });
       if (!res.data) {
         throw new Error("Room metadata unavailable");
       }
-      return res.data;
+      return res.data as MetaData;
     },
   });
 
