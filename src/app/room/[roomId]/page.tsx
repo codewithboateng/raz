@@ -157,7 +157,7 @@ const Page = () => {
   useEffect(() => {
     const interval = setInterval(() => {
       setNow(Date.now());
-    }, 1000);
+    }, 5000); // Update every 5 seconds instead of 1
 
     return () => clearInterval(interval);
   }, []);
@@ -189,6 +189,9 @@ const Page = () => {
   } = useQuery<ProcessedMessages>({
     queryKey: ["messages", roomId, secret],
     enabled: Boolean(secret),
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    staleTime: Infinity,
     queryFn: async () => {
       const res = await client.messages.get({ query: { roomId } });
       if (!res.data || !secret) {
@@ -305,16 +308,101 @@ const Page = () => {
 
       senderKeysRef.current.set(senderToken, nextKey);
       senderStepsRef.current.set(senderToken, currentStep + 1);
+    },
+    onMutate: async ({ text }) => {
+      // Clear input immediately for instant feedback
       setInput("");
+
+      // Don't add optimistic message - it breaks ratchet state
+      // Just let the real message come through via realtime
+
+      return { text }; // Save for error rollback
+    },
+    onError: (err, variables, context) => {
+      // Restore input on error
+      if (context?.text) {
+        setInput(context.text);
+      }
     },
   });
 
   useRealtime({
     channels: [roomId],
     events: ["chat.message", "chat.destroy", "chat.participants"],
-    onData: ({ event, data }) => {
+    onData: async ({ event, data }) => {
       if (event === "chat.message") {
-        refetch();
+        const newMessage = data as Message;
+
+        // Decrypt only the new message
+        if (secret) {
+          try {
+            const senderToken = newMessage.senderToken;
+            const key = await ensureSenderKey(senderToken);
+            const currentStep = senderStepsRef.current.get(senderToken) ?? 0;
+
+            // Only decrypt if this is the expected next step
+            if (newMessage.step === currentStep) {
+              const plaintext = await decryptWithRatchet(
+                newMessage.ciphertext,
+                newMessage.iv,
+                key
+              );
+
+              // Update cache with new decrypted message
+              queryClient.setQueryData<ProcessedMessages>(
+                ["messages", roomId, secret],
+                (old) => {
+                  if (!old) return old;
+
+                  // Check if this message already exists (prevent duplicates)
+                  const messageExists = old.messages.some(
+                    (msg) => msg.id === newMessage.id
+                  );
+
+                  if (messageExists) {
+                    return old; // Don't add duplicate
+                  }
+
+                  const newDecrypted = { ...old.decrypted, [newMessage.id]: plaintext };
+                  const newNames = { ...old.names };
+
+                  // Extract sender name if present
+                  try {
+                    const parsed = JSON.parse(plaintext);
+                    if (parsed?.sender) {
+                      newNames[senderToken] = parsed.sender;
+                    }
+                  } catch {
+                    // ignore
+                  }
+
+                  return {
+                    messages: [...old.messages, newMessage],
+                    decrypted: newDecrypted,
+                    names: newNames,
+                    steps: old.steps.map(([token, step]) =>
+                      token === senderToken ? [token, step + 1] : [token, step]
+                    ) as Array<[string, number]>,
+                    keys: old.keys,
+                  };
+                }
+              );
+
+              // Update ratchet state
+              const ivBytes = base64ToBytes(newMessage.iv);
+              const nextKey = await ratchetForward(key, ivBytes);
+              senderKeysRef.current.set(senderToken, nextKey);
+              senderStepsRef.current.set(senderToken, currentStep + 1);
+            } else {
+              // Out of order message, refetch to resync
+              refetch();
+            }
+          } catch (error) {
+            console.error("Failed to decrypt new message:", error);
+            // Fallback to full refetch
+            refetch();
+          }
+        }
       }
 
       if (event === "chat.destroy") {
@@ -390,11 +478,10 @@ const Page = () => {
                 </span>
                 <button
                   onClick={copyLink}
-                  className={`button-smooth text-[9px] sm:text-[10px] px-2 sm:px-2.5 py-1 rounded font-semibold transition-all duration-300 shrink-0 ${
-                    copyStatus === "COPIED!"
-                      ? "copy-feedback bg-green-900/40 text-green-400"
-                      : "bg-zinc-800/50 text-zinc-400 hover:bg-green-900/40 hover:text-green-400"
-                  }`}
+                  className={`button-smooth text-[9px] sm:text-[10px] px-2 sm:px-2.5 py-1 rounded font-semibold transition-all duration-300 shrink-0 ${copyStatus === "COPIED!"
+                    ? "copy-feedback bg-green-900/40 text-green-400"
+                    : "bg-zinc-800/50 text-zinc-400 hover:bg-green-900/40 hover:text-green-400"
+                    }`}
                 >
                   {copyStatus === "COPIED!" ? "✓" : "COPY"}
                 </button>
@@ -411,11 +498,10 @@ const Page = () => {
                 ? "Only the room creator can destroy this room"
                 : "Destroy this room and all messages"
             }
-            className={`button-smooth px-3 sm:px-4 py-2 rounded-lg text-xs sm:text-sm font-bold transition-all group flex items-center gap-1.5 sm:gap-2 shrink-0 ml-2 ${
-              metaData?.mode === "group" && !metaData.isOwner
-                ? "bg-zinc-800/30 text-zinc-500 cursor-not-allowed opacity-50"
-                : "bg-red-600/20 hover:bg-red-600/60 text-red-400 hover:text-red-200 shadow-lg hover:shadow-red-500/30 active:scale-95"
-            }`}
+            className={`button-smooth px-3 sm:px-4 py-2 rounded-lg text-xs sm:text-sm font-bold transition-all group flex items-center gap-1.5 sm:gap-2 shrink-0 ml-2 ${metaData?.mode === "group" && !metaData.isOwner
+              ? "bg-zinc-800/30 text-zinc-500 cursor-not-allowed opacity-50"
+              : "bg-red-600/20 hover:bg-red-600/60 text-red-400 hover:text-red-200 shadow-lg hover:shadow-red-500/30 active:scale-95"
+              }`}
           >
             <span className="group-hover:animate-pulse text-sm sm:text-base">
               💣
@@ -454,11 +540,10 @@ const Page = () => {
               TTL
             </span>
             <span
-              className={`text-sm font-bold font-mono ${
-                timeRemaining !== null && timeRemaining < 60
-                  ? "text-red-500"
-                  : "text-amber-500"
-              }`}
+              className={`text-sm font-bold font-mono ${timeRemaining !== null && timeRemaining < 60
+                ? "text-red-500"
+                : "text-amber-500"
+                }`}
             >
               {timeRemaining !== null
                 ? formatTimeRemaining(timeRemaining)
@@ -520,23 +605,21 @@ const Page = () => {
               className={`flex message-item message-enter ${`message-stagger-${Math.min(
                 idx % 4,
                 3
-              )}`} ${isMe ? "justify-end" : "justify-start"} ${
-                isDestroying ? `message-destroy-waterfall` : ""
-              }`}
+              )}`} ${isMe ? "justify-end" : "justify-start"} ${isDestroying ? `message-destroy-waterfall` : ""
+                }`}
               style={
                 isDestroying
                   ? {
-                      animationDelay: `${idx * 50}ms`,
-                    }
+                    animationDelay: `${idx * 50}ms`,
+                  }
                   : undefined
               }
             >
               <div className="max-w-[90%] sm:max-w-[80%]">
                 <div className="flex items-baseline gap-2 mb-1 sm:mb-2">
                   <span
-                    className={`text-xs font-bold uppercase tracking-wider ${
-                      isMe ? "text-amber-400" : "text-cyan-400"
-                    }`}
+                    className={`text-xs font-bold uppercase tracking-wider ${isMe ? "text-amber-400" : "text-cyan-400"
+                      }`}
                   >
                     {isMe ? "YOU" : displaySender}
                   </span>
@@ -546,9 +629,8 @@ const Page = () => {
                 </div>
 
                 <div
-                  className={`message-bubble px-3 sm:px-4 py-2 sm:py-3 rounded-lg ${
-                    isMe ? "message-bubble own" : "message-bubble other"
-                  }`}
+                  className={`message-bubble px-3 sm:px-4 py-2 sm:py-3 rounded-lg ${isMe ? "message-bubble own" : "message-bubble other"
+                    }`}
                 >
                   <p className="text-xs sm:text-sm text-zinc-200 leading-relaxed break-all font-medium">
                     {displayText}
@@ -591,11 +673,10 @@ const Page = () => {
                 inputRef.current?.focus();
               }}
               disabled={!input.trim() || isPending}
-              className={`button-smooth px-3 sm:px-6 py-2 sm:py-3 text-xs sm:text-sm font-bold rounded-lg transition-all duration-300 transform flex items-center justify-center gap-1 sm:gap-2 shrink-0 ${
-                input.trim()
-                  ? "bg-linear-to-r from-green-600 to-emerald-600 text-white hover:from-green-500 hover:to-emerald-500 shadow-lg hover:shadow-green-500/50 active:scale-95"
-                  : "bg-zinc-800/50 text-zinc-500 cursor-not-allowed"
-              }`}
+              className={`button-smooth px-3 sm:px-6 py-2 sm:py-3 text-xs sm:text-sm font-bold rounded-lg transition-all duration-300 transform flex items-center justify-center gap-1 sm:gap-2 shrink-0 ${input.trim()
+                ? "bg-linear-to-r from-green-600 to-emerald-600 text-white hover:from-green-500 hover:to-emerald-500 shadow-lg hover:shadow-green-500/50 active:scale-95"
+                : "bg-zinc-800/50 text-zinc-500 cursor-not-allowed"
+                }`}
             >
               {isPending ? (
                 <span className="animate-spin text-sm">⟳</span>
