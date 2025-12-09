@@ -1,0 +1,481 @@
+/* Base animation utilities */
+
+/* Particle animations */
+@keyframes float-up {
+  0% {
+    opacity: 0;
+    transform: translateY(100vh) translateX(0);
+  }
+  10% {
+    opacity: 1;
+  }
+  90% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-100vh) translateX(100px);
+  }
+}
+
+@keyframes particle-twinkle {
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 0.8;
+  }
+}
+
+.particle {
+  position: fixed;
+  pointer-events: none;
+  animation: float-up linear infinite, particle-twinkle 3s ease-in-out infinite;
+  will-change: transform, opacity;
+}
+
+/* Glassmorphism and glow effects */
+.glass-card {
+  background: rgba(24, 24, 27, 0.6);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  transition: all 0.3s ease;
+}
+
+.glass-card:hover {
+  background: rgba(24, 24, 27, 0.8);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+@keyframes pulsing-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 20px rgba(34, 197, 94, 0.3);
+  }
+  50% {
+    box-shadow: 0 0 40px rgba(34, 197, 94, 0.6);
+  }
+}
+
+.pulsing-glow {
+  animation: pulsing-glow 3s ease-in-out infinite;
+}
+
+/* Message animations */
+@keyframes message-fade-in {
+  0% {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.message-enter {
+  animation: message-fade-in 0.4s ease-out;
+}
+
+.message-stagger-0 {
+  animation-delay: 0ms;
+}
+
+.message-stagger-1 {
+  animation-delay: 50ms;
+}
+
+.message-stagger-2 {
+  animation-delay: 100ms;
+}
+
+.message-stagger-3 {
+  animation-delay: 150ms;
+}
+
+/* Glassmorphism message bubbles */
+.message-bubble {
+  background: rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  transition: all 0.3s ease;
+}
+
+.message-bubble:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.message-bubble.own {
+  background: rgba(245, 158, 11, 0.1);
+  border-color: rgba(245, 158, 11, 0.3);
+  box-shadow: 0 0 20px rgba(245, 158, 11, 0.2);
+}
+
+.message-bubble.other {
+  background: rgba(34, 211, 238, 0.1);
+  border-color: rgba(34, 211, 238, 0.3);
+  box-shadow: 0 0 20px rgba(34, 211, 238, 0.2);
+}
+
+/* Typing indicator */
+@keyframes typing-wave {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.6;
+  }
+  30% {
+    transform: translateY(-15px);
+    opacity: 1;
+  }
+}
+
+.typing-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.6);
+  animation: typing-wave 1.4s infinite;
+  display: inline-block;
+  margin: 0 2px;
+}
+
+.typing-dot:nth-child(1) {
+  animation-delay: 0s;
+}
+
+.typing-dot:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.typing-dot:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+/* Timer circular progress */
+@keyframes progress-rotate {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+.timer-ring {
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  position: relative;
+  background: conic-gradient(
+    from 0deg,
+    rgba(34, 197, 94, 0.6) 0%,
+    rgba(250, 204, 21, 0.6) 50%,
+    rgba(239, 68, 68, 0.6) 100%
+  );
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 0 20px rgba(34, 197, 94, 0.3);
+}
+
+.timer-ring-inner {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  background: rgba(24, 24, 27, 0.9);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.timer-ring-text {
+  font-size: 18px;
+  font-weight: bold;
+  color: rgba(34, 197, 94, 1);
+  text-align: center;
+  font-family: monospace;
+}
+
+/* Encryption shield pulse */
+@keyframes shield-pulse {
+  0%,
+  100% {
+    opacity: 0.6;
+    filter: drop-shadow(0 0 8px rgba(34, 197, 94, 0.3));
+  }
+  50% {
+    opacity: 1;
+    filter: drop-shadow(0 0 16px rgba(34, 197, 94, 0.8));
+  }
+}
+
+.encryption-shield {
+  animation: shield-pulse 2s ease-in-out infinite;
+  will-change: opacity, filter;
+}
+
+/* Send button ripple effect */
+@keyframes ripple {
+  0% {
+    transform: scale(0);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(4);
+    opacity: 0;
+  }
+}
+
+.ripple {
+  position: absolute;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.6);
+  animation: ripple 0.6s ease-out;
+  pointer-events: none;
+}
+
+.send-button-wrapper {
+  position: relative;
+  overflow: hidden;
+}
+
+/* Send button checkmark morph */
+@keyframes checkmark-appear {
+  0% {
+    opacity: 0;
+    transform: scale(0.5) rotate(-45deg);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) rotate(0deg);
+  }
+}
+
+@keyframes send-icon-hide {
+  0% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(0.5);
+  }
+}
+
+.checkmark-appear {
+  animation: checkmark-appear 0.4s ease-out;
+}
+
+.send-icon-hide {
+  animation: send-icon-hide 0.4s ease-out;
+}
+
+/* Copy button micro-animation */
+@keyframes copy-feedback {
+  0% {
+    background-color: rgba(168, 85, 247, 0.1);
+  }
+  50% {
+    background-color: rgba(34, 197, 94, 0.2);
+  }
+  100% {
+    background-color: rgba(168, 85, 247, 0.1);
+  }
+}
+
+.copy-feedback {
+  animation: copy-feedback 0.6s ease-out;
+}
+
+/* Room destroy waterfall fade */
+@keyframes message-waterfall-out {
+  0% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(30px) scale(0.95);
+  }
+}
+
+.message-destroy-waterfall {
+  animation: message-waterfall-out 0.5s ease-out forwards;
+}
+
+@keyframes room-destroyed-overlay {
+  0% {
+    opacity: 0;
+    backdrop-filter: blur(0px);
+  }
+  100% {
+    opacity: 1;
+    backdrop-filter: blur(10px);
+  }
+}
+
+.room-destroyed-overlay {
+  animation: room-destroyed-overlay 0.6s ease-out forwards;
+}
+
+/* Ambient grid pulse */
+@keyframes grid-pulse {
+  0%,
+  100% {
+    opacity: 0.03;
+  }
+  50% {
+    opacity: 0.08;
+  }
+}
+
+.ambient-grid {
+  position: fixed;
+  inset: 0;
+  background-image: linear-gradient(
+      rgba(255, 255, 255, 0.05) 1px,
+      transparent 1px
+    ),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+  background-size: 50px 50px;
+  pointer-events: none;
+  animation: grid-pulse 4s ease-in-out infinite;
+  will-change: opacity;
+}
+
+/* Encrypt data flow particles */
+@keyframes data-flow {
+  0% {
+    opacity: 0;
+    transform: translateX(-100%);
+  }
+  10% {
+    opacity: 1;
+  }
+  90% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(100%);
+  }
+}
+
+.data-flow-particle {
+  position: absolute;
+  width: 2px;
+  height: 2px;
+  background: rgba(34, 197, 94, 0.8);
+  border-radius: 50%;
+  animation: data-flow 2s linear infinite;
+}
+
+/* Participant avatar glow on activity */
+@keyframes avatar-glow-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 10px rgba(34, 211, 238, 0.3);
+  }
+  50% {
+    box-shadow: 0 0 20px rgba(34, 211, 238, 0.8);
+  }
+}
+
+.participant-avatar {
+  border-radius: 50%;
+  transition: all 0.3s ease;
+}
+
+.participant-avatar.active {
+  animation: avatar-glow-pulse 2s ease-in-out;
+}
+
+/* Smooth 60fps optimizations */
+* {
+  box-sizing: border-box;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Dark mode gradient background for landing */
+.landing-gradient {
+  background: linear-gradient(135deg, #0f172a 0%, #002b33 50%, #0a0e27 100%);
+  position: relative;
+}
+
+.landing-gradient::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    ellipse 80% 80% at 50% 50%,
+    rgba(34, 197, 94, 0.03) 0%,
+    transparent 100%
+  );
+  pointer-events: none;
+}
+
+/* Lock icon unlock animation */
+@keyframes lock-unlock {
+  0% {
+    transform: translateY(0) rotate(0deg);
+  }
+  50% {
+    transform: translateY(-5px) rotate(-15deg);
+  }
+  100% {
+    transform: translateY(0) rotate(0deg);
+  }
+}
+
+.lock-icon-unlock {
+  animation: lock-unlock 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* Smooth input focus glow */
+.input-focus-glow {
+  transition: all 0.3s ease;
+}
+
+.input-focus-glow:focus {
+  box-shadow: 0 0 20px rgba(34, 197, 94, 0.2),
+    inset 0 0 10px rgba(34, 197, 94, 0.05);
+  border-color: rgba(34, 197, 94, 0.5);
+}
+
+/* Button morphs and transitions */
+.button-smooth {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+}
+
+.button-smooth:active {
+  transform: scale(0.98);
+}
+
+.button-smooth:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Message list optimization */
+.message-list {
+  will-change: scroll-position;
+  contain: layout style paint;
+}
+
+.message-item {
+  will-change: opacity, transform;
+}

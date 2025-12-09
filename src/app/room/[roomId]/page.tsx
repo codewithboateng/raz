@@ -3,6 +3,7 @@
 import { useUsername } from "@/hooks/use-username";
 import { client } from "@/lib/client";
 import { useRealtime } from "@/lib/realtime-client";
+import { EncryptionShield } from "@/components/encryption-shield";
 import {
   decryptWithRatchet,
   deriveInitialKey,
@@ -13,7 +14,14 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState, startTransition } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  startTransition,
+} from "react";
 import type { Message } from "@/lib/realtime";
 
 function formatTimeRemaining(seconds: number) {
@@ -36,6 +44,7 @@ const Page = () => {
 
   const [copyStatus, setCopyStatus] = useState("COPY");
   const [now, setNow] = useState(() => Date.now());
+  const [isDestroying, setIsDestroying] = useState(false);
 
   const [secret, setSecret] = useState<string | null>(null);
   const [secretReady, setSecretReady] = useState(false);
@@ -209,7 +218,11 @@ const Page = () => {
             expectedStep = msg.step;
           }
           try {
-            const plaintext = await decryptWithRatchet(msg.ciphertext, msg.iv, key);
+            const plaintext = await decryptWithRatchet(
+              msg.ciphertext,
+              msg.iv,
+              key
+            );
             decrypted[msg.id] = plaintext;
             try {
               const parsed = JSON.parse(plaintext);
@@ -245,8 +258,14 @@ const Page = () => {
     senderKeysRef.current = keyMap;
   }, [processed]);
 
-  const decryptedMap = useMemo(() => new Map(Object.entries(processed?.decrypted ?? {})), [processed]);
-  const nameMap = useMemo(() => new Map(Object.entries(processed?.names ?? {})), [processed]);
+  const decryptedMap = useMemo(
+    () => new Map(Object.entries(processed?.decrypted ?? {})),
+    [processed]
+  );
+  const nameMap = useMemo(
+    () => new Map(Object.entries(processed?.names ?? {})),
+    [processed]
+  );
   const messages = processed?.messages;
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
@@ -310,6 +329,7 @@ const Page = () => {
 
   const { mutate: destroyRoom } = useMutation({
     mutationFn: async () => {
+      setIsDestroying(true);
       await client.room.delete(null, { query: { roomId } });
     },
   });
@@ -342,7 +362,8 @@ const Page = () => {
         <div className="max-w-md space-y-4 text-center">
           <p className="text-red-500 font-bold">Missing room key</p>
           <p className="text-zinc-400 text-sm">
-            Open the full room link that includes the <code>#k=</code> fragment to decrypt messages.
+            Open the full room link that includes the <code>#k=</code> fragment
+            to decrypt messages.
           </p>
         </div>
       </main>
@@ -350,44 +371,90 @@ const Page = () => {
   }
 
   return (
-    <main className="flex flex-col h-screen max-h-screen overflow-hidden">
-      <header className="border-b border-zinc-800 p-4 flex items-center justify-between bg-zinc-900/30">
-        <div className="flex items-center gap-4">
-          <div className="flex flex-col">
-            <span className="text-xs text-zinc-500 uppercase">Room ID</span>
-            <div className="flex items-center gap-2">
-              <span className="font-bold text-green-500 truncate">
-                {roomId.slice(0, 10) + "..."}
+    <main className="flex flex-col h-screen max-h-screen overflow-hidden bg-linear-to-b from-zinc-950 via-black to-zinc-950">
+      <div className="ambient-grid" />
+
+      {/* Header - Responsive Layout */}
+      <header className="relative z-10 border-b border-zinc-700/30 bg-zinc-900/40 backdrop-blur-md">
+        {/* Top row: Room info and destroy button */}
+        <div className="flex items-center justify-between p-3 sm:p-4">
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+            {/* Room ID Section - Compact on Mobile */}
+            <div className="flex flex-col min-w-0">
+              <span className="text-[10px] sm:text-xs text-zinc-500 uppercase tracking-wider">
+                Room
               </span>
-              <button
-                onClick={copyLink}
-                className="text-[10px] bg-zinc-800 hover:bg-zinc-700 px-2 py-0.5 rounded text-zinc-400 hover:text-zinc-200 transition-colors"
-              >
-                {copyStatus}
-              </button>
+              <div className="flex items-center gap-2 sm:gap-3 mt-0.5 min-w-0">
+                <span className="font-bold text-green-500 truncate font-mono text-xs sm:text-sm">
+                  {roomId.slice(0, 6) + "..."}
+                </span>
+                <button
+                  onClick={copyLink}
+                  className={`button-smooth text-[9px] sm:text-[10px] px-2 sm:px-2.5 py-1 rounded font-semibold transition-all duration-300 shrink-0 ${
+                    copyStatus === "COPIED!"
+                      ? "copy-feedback bg-green-900/40 text-green-400"
+                      : "bg-zinc-800/50 text-zinc-400 hover:bg-green-900/40 hover:text-green-400"
+                  }`}
+                >
+                  {copyStatus === "COPIED!" ? "✓" : "COPY"}
+                </button>
+              </div>
             </div>
           </div>
 
-          <div className="h-8 w-px bg-zinc-800" />
-
-          <div className="flex flex-col">
-            <span className="text-xs text-zinc-500 uppercase">
-              Participants
+          {/* Destroy button - Prominent on mobile */}
+          <button
+            onClick={() => destroyRoom()}
+            disabled={metaData?.mode === "group" && !metaData.isOwner}
+            title={
+              metaData?.mode === "group" && !metaData.isOwner
+                ? "Only the room creator can destroy this room"
+                : "Destroy this room and all messages"
+            }
+            className={`button-smooth px-3 sm:px-4 py-2 rounded-lg text-xs sm:text-sm font-bold transition-all group flex items-center gap-1.5 sm:gap-2 shrink-0 ml-2 ${
+              metaData?.mode === "group" && !metaData.isOwner
+                ? "bg-zinc-800/30 text-zinc-500 cursor-not-allowed opacity-50"
+                : "bg-red-600/20 hover:bg-red-600/60 text-red-400 hover:text-red-200 shadow-lg hover:shadow-red-500/30 active:scale-95"
+            }`}
+          >
+            <span className="group-hover:animate-pulse text-sm sm:text-base">
+              💣
             </span>
-            <span className="text-sm font-bold text-purple-500">
+            <span className="hidden sm:inline">DESTROY</span>
+          </button>
+        </div>
+
+        {/* Bottom row: Stats - Responsive Grid */}
+        <div className="border-t border-zinc-700/30 p-3 sm:p-4 grid grid-cols-3 sm:grid-cols-4 gap-3 sm:gap-4">
+          {/* Encryption Status */}
+          <div className="flex items-center gap-2">
+            <EncryptionShield className="w-4 h-4 text-green-500 shrink-0" />
+            <div className="flex flex-col min-w-0">
+              <span className="text-[9px] text-zinc-500 uppercase tracking-wider">
+                E2E
+              </span>
+              <span className="text-xs font-bold text-green-500">Active</span>
+            </div>
+          </div>
+
+          {/* Participants */}
+          <div className="flex flex-col">
+            <span className="text-[9px] text-zinc-500 uppercase tracking-wider">
+              Users
+            </span>
+            <span className="text-sm font-bold text-cyan-400">
               {participantCount ?? 0}/
               {metaData?.capacity === null ? "∞" : metaData?.capacity ?? 2}
             </span>
           </div>
 
-          <div className="h-8 w-px bg-zinc-800" />
-
+          {/* Self-Destruct Timer */}
           <div className="flex flex-col">
-            <span className="text-xs text-zinc-500 uppercase">
-              Self-Destruct
+            <span className="text-[9px] text-zinc-500 uppercase tracking-wider">
+              TTL
             </span>
             <span
-              className={`text-sm font-bold flex items-center gap-2 ${
+              className={`text-sm font-bold font-mono ${
                 timeRemaining !== null && timeRemaining < 60
                   ? "text-red-500"
                   : "text-amber-500"
@@ -398,25 +465,19 @@ const Page = () => {
                 : "--:--"}
             </span>
           </div>
-        </div>
 
-        <button
-          onClick={() => destroyRoom()}
-          disabled={metaData?.mode === "group" && !metaData.isOwner}
-          title={
-            metaData?.mode === "group" && !metaData.isOwner
-              ? "Only the room creator can destroy this room"
-              : undefined
-          }
-          className="text-xs bg-zinc-800 hover:bg-red-600 px-3 py-1.5 rounded text-zinc-400 hover:text-white font-bold transition-all group flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          <span className="group-hover:animate-pulse">💣</span>
-          DESTROY NOW
-        </button>
+          {/* Copy status indicator - mobile only */}
+          <div className="hidden sm:flex flex-col">
+            <span className="text-[9px] text-zinc-500 uppercase tracking-wider">
+              Link
+            </span>
+            <span className="text-xs font-bold text-zinc-400">Encrypted</span>
+          </div>
+        </div>
       </header>
 
       {/* MESSAGES */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4 scrollbar-thin">
+      <div className="flex-1 overflow-y-auto p-2 sm:p-4 space-y-3 sm:space-y-4 scrollbar-thin message-list">
         {messages?.length === 0 && (
           <div className="flex items-center justify-center h-full">
             <p className="text-zinc-600 text-sm font-mono">
@@ -425,12 +486,15 @@ const Page = () => {
           </div>
         )}
 
-        {messages?.map((msg) => {
+        {messages?.map((msg, idx) => {
           const decrypted = decryptedMap.get(msg.id);
-          let displayText = decrypted ?? (isDecrypting ? "Decrypting..." : "[Encrypted]");
+          let displayText =
+            decrypted ?? (isDecrypting ? "Decrypting..." : "[Encrypted]");
           let displaySender =
             nameMap.get(msg.senderToken) ??
-            (msg.senderToken === "" ? "Unknown" : `Peer ${msg.senderToken.slice(0, 6)}`);
+            (msg.senderToken === ""
+              ? "Unknown"
+              : `Peer ${msg.senderToken.slice(0, 6)}`);
           let displayTime = format(msg.timestamp, "HH:mm");
 
           if (decrypted) {
@@ -451,23 +515,45 @@ const Page = () => {
           const isMe = displaySender === username;
 
           return (
-            <div key={msg.id} className="flex flex-col items-start">
-              <div className="max-w-[80%] group">
-                <div className="flex items-baseline gap-3 mb-1">
+            <div
+              key={msg.id}
+              className={`flex message-item message-enter ${`message-stagger-${Math.min(
+                idx % 4,
+                3
+              )}`} ${isMe ? "justify-end" : "justify-start"} ${
+                isDestroying ? `message-destroy-waterfall` : ""
+              }`}
+              style={
+                isDestroying
+                  ? {
+                      animationDelay: `${idx * 50}ms`,
+                    }
+                  : undefined
+              }
+            >
+              <div className="max-w-[90%] sm:max-w-[80%]">
+                <div className="flex items-baseline gap-2 mb-1 sm:mb-2">
                   <span
-                    className={`text-xs font-bold ${
-                      isMe ? "text-green-500" : "text-blue-500"
+                    className={`text-xs font-bold uppercase tracking-wider ${
+                      isMe ? "text-amber-400" : "text-cyan-400"
                     }`}
                   >
                     {isMe ? "YOU" : displaySender}
                   </span>
-
-                  <span className="text-[10px] text-zinc-600">{displayTime}</span>
+                  <span className="text-[9px] sm:text-[10px] text-zinc-600">
+                    {displayTime}
+                  </span>
                 </div>
 
-                <p className="text-sm text-zinc-300 leading-relaxed break-all">
-                  {displayText}
-                </p>
+                <div
+                  className={`message-bubble px-3 sm:px-4 py-2 sm:py-3 rounded-lg ${
+                    isMe ? "message-bubble own" : "message-bubble other"
+                  }`}
+                >
+                  <p className="text-xs sm:text-sm text-zinc-200 leading-relaxed break-all font-medium">
+                    {displayText}
+                  </p>
+                </div>
               </div>
             </div>
           );
@@ -475,13 +561,14 @@ const Page = () => {
         <div ref={messagesEndRef} />
       </div>
 
-      <div className="p-4 border-t border-zinc-800 bg-zinc-900/30">
-        <div className="flex gap-4">
+      <div className="p-2 sm:p-4 border-t border-zinc-700/30 bg-zinc-900/40 backdrop-blur-md">
+        <div className="flex gap-2 sm:gap-3">
           <div className="flex-1 relative group">
-            <span className="absolute left-4 top-1/2 -translate-y-1/2 text-green-500 animate-pulse">
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-green-500 opacity-60">
               {">"}
             </span>
             <input
+              ref={inputRef}
               autoFocus
               type="text"
               value={input}
@@ -491,26 +578,48 @@ const Page = () => {
                   inputRef.current?.focus();
                 }
               }}
-              placeholder="Type message..."
+              placeholder="Message..."
               onChange={(e) => setInput(e.target.value)}
-              className="w-full bg-black border border-zinc-800 focus:border-zinc-700 focus:outline-none transition-colors text-zinc-100 placeholder:text-zinc-700 py-3 pl-8 pr-4 text-sm"
+              className="input-focus-glow w-full bg-zinc-950/60 border border-zinc-700 focus:border-green-500/50 focus:outline-none transition-all text-zinc-100 placeholder:text-zinc-700 py-2 sm:py-3 pl-9 sm:pl-10 pr-3 sm:pr-4 text-sm rounded-lg"
             />
           </div>
 
-          <button
-            onClick={() => {
-              sendMessage({ text: input });
-              inputRef.current?.focus();
-            }}
-            disabled={!input.trim() || isPending}
-            className={`px-6 text-sm font-bold transition-all disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer ${
-              input.trim()
-                ? "bg-green-600 text-white hover:bg-green-700"
-                : "bg-zinc-800 text-zinc-400 hover:text-zinc-200"
-            }`}
-          >
-            SEND
-          </button>
+          <div className="send-button-wrapper">
+            <button
+              onClick={() => {
+                sendMessage({ text: input });
+                inputRef.current?.focus();
+              }}
+              disabled={!input.trim() || isPending}
+              className={`button-smooth px-3 sm:px-6 py-2 sm:py-3 text-xs sm:text-sm font-bold rounded-lg transition-all duration-300 transform flex items-center justify-center gap-1 sm:gap-2 shrink-0 ${
+                input.trim()
+                  ? "bg-linear-to-r from-green-600 to-emerald-600 text-white hover:from-green-500 hover:to-emerald-500 shadow-lg hover:shadow-green-500/50 active:scale-95"
+                  : "bg-zinc-800/50 text-zinc-500 cursor-not-allowed"
+              }`}
+            >
+              {isPending ? (
+                <span className="animate-spin text-sm">⟳</span>
+              ) : (
+                <>
+                  <span className="hidden sm:inline">SEND</span>
+                  <span className="sm:hidden">→</span>
+                  <svg
+                    className="w-4 h-4 hidden sm:block"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"
+                    />
+                  </svg>
+                </>
+              )}
+            </button>
+          </div>
         </div>
       </div>
     </main>
