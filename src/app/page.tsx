@@ -7,9 +7,29 @@ import { ParticleBackground } from "@/components/particle-background";
 import { AnimatedLockIcon } from "@/components/animated-lock-icon";
 import { useMutation } from "@tanstack/react-query";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useMemo, useState } from "react";
+import { Suspense, useMemo, useState, useEffect } from "react";
+import { OnboardingFlow } from "@/components/onboarding/onboarding-flow";
 
 const Page = () => {
+  const [isOnboarding, setIsOnboarding] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    const completed = localStorage.getItem("raz-onboarding-completed");
+    // eslint-disable-next-line
+    setIsOnboarding(completed !== "true");
+  }, []);
+
+  const completeOnboarding = () => {
+    localStorage.setItem("raz-onboarding-completed", "true");
+    setIsOnboarding(false);
+  };
+
+  if (isOnboarding === null) return null; // Or a loading spinner
+
+  if (isOnboarding) {
+    return <OnboardingFlow onComplete={completeOnboarding} />;
+  }
+
   return (
     <Suspense>
       <Lobby />
